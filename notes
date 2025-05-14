@@ -1,0 +1,139 @@
+# ───────────────────────────────────────────────────────────────────
+# ❶  Graph  +  raw payload  + 3 editors (Details | I/O | Connect)
+# ───────────────────────────────────────────────────────────────────
+CLICK_EVENT = Event("proc_click", "tap", ".process")
+
+with st.container(border=True):
+    # ───────── render the Cytoscape component ─────────────────────
+    payload = st_link_analysis(
+        graph,
+        node_styles=node_styles,
+        edge_styles=edge_styles,
+        events=[CLICK_EVENT],
+        layout={"name": "preset"},
+        height=600,
+        node_actions=["remove"],
+        key=f"cy_{st.session_state.cy_key}",
+    )
+
+    st.markdown("#### Raw returned value")
+    st.json(payload or {}, expanded=False)
+
+    # ───────── react to click on a process node ───────────────────
+    if (
+        isinstance(payload, dict)
+        and payload.get("action") == "proc_click"
+        and isinstance(payload.get("data"), dict)
+    ):
+        clicked_id = payload["data"].get("target_id") or payload["data"].get("id")
+
+        node_map = {n["data"]["id"]: n for n in graph["nodes"]}
+        proc = node_map.get(clicked_id)
+
+        if proc and "process" in proc["classes"]:
+
+            # ===== 1) DETAILS ==================================================
+            with st.expander(f"📝 Edit “{proc['data']['label']}”", expanded=False):
+                cur_cat = proc["data"].get("category", PROCESS_CATEGORIES[0])
+
+                with st.form(f"edit_main_{clicked_id}", border=True):
+                    new_label = st.text_input("Name", proc["data"]["label"])
+                    new_cat   = st.selectbox(
+                        "Category", PROCESS_CATEGORIES,
+                        index=PROCESS_CATEGORIES.index(cur_cat))
+                    if st.form_submit_button("✅ Save"):
+                        proc["data"]["label"] = new_label
+                        proc["data"]["category"] = new_cat
+                        proc["classes"] = f"process {new_cat.lower().replace(' ','_')}"
+                        proc["data"]["color"] = DEFAULT_CATEGORY_COLORS[new_cat]
+                        st.success("Saved – refreshing …", icon="💾")
+                        st.rerun()
+
+                                # -------- inside the DETAILS expander, below the Save form ----------
+                delete_clicked = st.button(
+                    "🗑️  Delete this process",
+                    type="secondary",
+                    key=f"del_btn_{clicked_id}",
+                )
+
+                if delete_clicked:
+                    # Pick the decorator that exists on this Streamlit version
+                    dlg = getattr(st, "dialog", None) or st.experimental_dialog
+
+                    @dlg(f"Confirm delete “{proc['data']['label']}”")
+                    def _confirm_delete():
+                        st.warning(
+                            "This will remove the node **and** all its connections.",
+                            icon="⚠️",
+                        )
+
+                        col_ok, col_cancel = st.columns(2)
+                        if col_ok.button("Yes, delete", use_container_width=True):
+                            # -- drop the node -----------------------------------------
+                            graph["nodes"] = [
+                                n for n in graph["nodes"]
+                                if n["data"]["id"] != clicked_id
+                            ]
+                            graph["edges"] = [
+                                e for e in graph["edges"]
+                                if clicked_id not in (e["data"]["source"], e["data"]["target"])
+                            ]
+                            st.session_state.selected_proc = None
+                            st.success("Deleted. Refreshing …")
+                            st.rerun()
+
+                        if col_cancel.button("Cancel", use_container_width=True):
+                            st.rerun()          # just close the dialog
+
+                    _confirm_delete()           # ← STEP ❷ – show the modal
+
+            # ===== 2) NEW  I/O + PARAMS  ======================================
+            with st.expander("⚙️ Inputs / Outputs (x, y, P, f, w, f(x))", expanded=False):
+                d = proc["data"]          # short-hand
+                with st.form(f"io_form_{clicked_id}", border=True):
+                    col1, col2 = st.columns(2)
+                    x = col1.text_input("x  – Input material",  d.get("x",  ""))
+                    y = col2.text_input("y  – Resources",       d.get("y",  ""))
+                    P = col1.text_input("P  – Process params",  d.get("P",  ""))
+                    f = col2.text_input("f  – Output product",  d.get("f",  ""))
+                    w = st.text_input ("w  – Waste / rejects",  d.get("w",  ""))
+
+                    # optional expression for f(x)
+                    fx = st.text_input("f(x) – Output as function of x",
+                                       d.get("fx", ""))
+
+                    if st.form_submit_button("✅ Save I/O"):
+                        d.update({"x": x, "y": y, "P": P, "f": f, "w": w, "fx": fx})
+                        # re-compute detail score D
+                        d["D"] = calculate_detail_score(
+                            {"x": x, "y": y, "P": P, "f": f, "w": w}
+                        )
+                        st.success("I/O updated – refreshing …", icon="💾")
+                        st.rerun()
+
+            # ===== 3) CONNECTION CREATOR =======================================
+            other_procs = [
+                (n["data"]["label"], n["data"]["id"])
+                for n in graph["nodes"]
+                if "process" in n["classes"] and n["data"]["id"] != clicked_id
+            ]
+
+            if other_procs:
+                with st.expander("🔗 Create connection", expanded=False):
+                    tgt_lbl = st.selectbox(
+                        "Target process",
+                        [lbl for lbl, _ in other_procs],
+                        key=f"conn_tgt_{clicked_id}",
+                    )
+                    tgt_id = dict(other_procs)[tgt_lbl]
+                    edge_lbl = st.text_input(
+                        "Connection label (optional)",
+                        key=f"conn_lbl_{clicked_id}",
+                    )
+                    if st.button("✅ Create connection",
+                                 key=f"mk_edge_{clicked_id}_{tgt_id}"):
+                        _add_edge(clicked_id, tgt_id, edge_lbl)
+                        st.success(f"Edge {clicked_id} → {tgt_id} created")
+                        st.rerun()
+            else:
+                st.info("No other processes to connect to.")
