@@ -553,11 +553,6 @@ with st.container(border=True):
                         st.success("Saved – refreshing …", icon="💾")
                         st.rerun()
 
-                delete_clicked = st.button(
-                    "🗑️  Delete this process",
-                    type="secondary",
-                    key=f"del_btn_{clicked_id}",
-                )
                 if st.button("🗑️  Delete this process",
                              type="secondary",
                              key=f"del_btn_{clicked_id}"):
