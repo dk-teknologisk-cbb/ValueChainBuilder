@@ -526,11 +526,11 @@ with st.container(border=True):
                     type="secondary",
                     key=f"del_btn_{clicked_id}",
                 )
-                
+
                 if delete_clicked:
-                    # pick whichever dialog API exists on this Streamlit version
                     dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
-                    if dlg is None:          # very old Streamlit – just delete without prompt
+                
+                    if dlg is None:          # extremely old Streamlit – skip the modal
                         _actually_delete_node(clicked_id)
                         st.rerun()
                 
@@ -545,12 +545,10 @@ with st.container(border=True):
                             _actually_delete_node(clicked_id)
                             st.success("Deleted. Refreshing …")
                             st.rerun()
-                
                         if col_cancel.button("Cancel", use_container_width=True):
                             st.rerun()
                 
                     _confirm_delete()
-                # ------------------------------------------------------------------
 
 
             # ===== 2) NEW  I/O + PARAMS  ======================================
