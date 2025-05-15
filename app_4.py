@@ -94,6 +94,12 @@ def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
     return {k: v + 1 for k, v in max_seen.items()}
 
 
+def _actually_delete_node(nid: str) -> None:
+    """Remove the node and all incident edges."""
+    graph["nodes"]  = [n for n in graph["nodes"] if n["data"]["id"] != nid]
+    graph["edges"]  = [e for e in graph["edges"]
+                       if nid not in (e["data"]["source"], e["data"]["target"])]
+
 
 # ──────────────────────────────────────────────────────────────────────────
 #  AES‑GCM helpers
