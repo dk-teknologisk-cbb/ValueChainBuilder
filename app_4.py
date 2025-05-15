@@ -514,42 +514,37 @@ with st.container(border=True):
                         proc["data"]["color"] = DEFAULT_CATEGORY_COLORS[new_cat]
                         st.success("Saved – refreshing …", icon="💾")
                         st.rerun()
+
                 delete_clicked = st.button(
                     "🗑️  Delete this process",
                     type="secondary",
                     key=f"del_btn_{clicked_id}",
                 )
-
+                
                 if delete_clicked:
-                    # Pick the decorator that exists on this Streamlit version
-                    dlg = getattr(st, "dialog", None) or st.experimental_dialog
-
+                    # pick whichever dialog API exists on this Streamlit version
+                    dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+                    if dlg is None:          # very old Streamlit – just delete without prompt
+                        _actually_delete_node(clicked_id)
+                        st.rerun()
+                
                     @dlg(f"Confirm delete “{proc['data']['label']}”")
                     def _confirm_delete():
                         st.warning(
                             "This will remove the node **and** all its connections.",
                             icon="⚠️",
                         )
-
                         col_ok, col_cancel = st.columns(2)
                         if col_ok.button("Yes, delete", use_container_width=True):
-                            # -- drop the node -----------------------------------------
-                            graph["nodes"] = [
-                                n for n in graph["nodes"]
-                                if n["data"]["id"] != clicked_id
-                            ]
-                            graph["edges"] = [
-                                e for e in graph["edges"]
-                                if clicked_id not in (e["data"]["source"], e["data"]["target"])
-                            ]
-                            st.session_state.selected_proc = None
+                            _actually_delete_node(clicked_id)
                             st.success("Deleted. Refreshing …")
                             st.rerun()
-
+                
                         if col_cancel.button("Cancel", use_container_width=True):
-                            st.rerun()          # just close the dialog
-
-                    _confirm_delete()           # ← STEP ❷ – show the modal
+                            st.rerun()
+                
+                    _confirm_delete()
+                # ------------------------------------------------------------------
 
 
             # ===== 2) NEW  I/O + PARAMS  ======================================
