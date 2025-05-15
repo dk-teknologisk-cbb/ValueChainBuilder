@@ -66,6 +66,14 @@ EDGE_TYPES = {                       # human → internal description
     },
 }
 
+# ────────────────────────────────────────────────
+#  0) one-time init for the flag
+# ────────────────────────────────────────────────
+if "pending_delete" not in st.session_state:
+    # holds {"id": "...", "label": "..."} or None
+    st.session_state.pending_delete = None
+# ------------------------------------------------
+
 
 
 def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
@@ -550,25 +558,17 @@ with st.container(border=True):
                     type="secondary",
                     key=f"del_btn_{clicked_id}",
                 )
+                if st.button("🗑️  Delete this process",
+                             type="secondary",
+                             key=f"del_btn_{clicked_id}"):
+                
+                    # just remember what we want to delete and refresh
+                    st.session_state.pending_delete = {
+                        "id":    clicked_id,
+                        "label": proc["data"]["label"],
+                    }
+                    st.rerun()
 
-                if delete_clicked:
-                
-                    def _dialog_body():
-                        st.warning(
-                            "This will remove the node **and** all its connections.",
-                            icon="⚠️",
-                        )
-                        col_ok, col_cancel = st.columns(2)
-                
-                        if col_ok.button("Yes, delete", use_container_width=True):
-                            _actually_delete_node(clicked_id)
-                            st.success("Deleted. Refreshing …")
-                            st.rerun()
-                
-                        if col_cancel.button("Cancel", use_container_width=True):
-                            st.rerun()
-                
-                    show_dialog(f"Confirm delete “{proc['data']['label']}”", _dialog_body)
 
 
             # ===== 2) NEW  I/O + PARAMS  ======================================
@@ -681,5 +681,24 @@ with st.container(border=True):
             else:
                 st.info("No other processes to connect to.")
 
+if st.session_state.pending_delete:
 
+    pid    = st.session_state.pending_delete["id"]
+    plabel = st.session_state.pending_delete["label"]
+
+    with st.container(border=True):
+        st.warning(
+            f"**Delete “{plabel}” and all its connections?**",
+            icon="⚠️"
+        )
+        col_yes, col_no = st.columns(2)
+
+        if col_yes.button("✅ Yes, delete", key="confirm_del_yes"):
+            _actually_delete_node(pid)        # ← real delete
+            st.session_state.pending_delete = None
+            st.rerun()
+
+        if col_no.button("✖️ Cancel", key="confirm_del_no"):
+            st.session_state.pending_delete = None
+            st.rerun()
 
