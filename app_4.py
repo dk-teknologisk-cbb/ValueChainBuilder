@@ -16,6 +16,8 @@ from cryptography.hazmat.primitives import hashes
 from st_link_analysis import (
     st_link_analysis, NodeStyle, EdgeStyle, Event          # ← NEW: Event
 )
+import re
+import numpy as np
 
 st.set_page_config(layout="wide")
 
@@ -65,7 +67,7 @@ EDGE_TYPES = {                       # human → internal description
 }
 
 
-import re
+
 def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
     """
     Look at every node / edge ID in the graph and find the maximum numeric
@@ -414,14 +416,31 @@ def slim_payload(pl, g: dict) -> dict:
 
         return nice
 
-    # unknown type
     return {}
 
 
+def show_dialog(title: str, body_fn):
+    """
+    Open a modal that works on *any* Streamlit version.
+    Pass the title and a callable that renders the content.
+    """
+    dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+    if dlg is None:  # very old Streamlit – just run the body inline
+        body_fn()
+        return
 
-import numpy as np
+    # Context-manager style (new) __________________________
+    if not hasattr(dlg, "__call__") or not getattr(dlg, "__name__", "").endswith("decorator"):
+        with dlg(title):
+            body_fn()
+        return
 
-import numpy as np
+    # Decorator style (old) ________________________________
+    @dlg(title)
+    def _inner():
+        body_fn()
+    _inner()
+
 
 def _parse_amounts(entries: list[str]) -> np.ndarray:
     """Given ["Fe: 12 kg", "O2: 3.5 mol"], return array([12.0, 3.5])."""
@@ -528,30 +547,25 @@ with st.container(border=True):
                 )
 
                 if delete_clicked:
-                    dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
                 
-                    if dlg is None:          # extremely old Streamlit – skip the modal
-                        _actually_delete_node(clicked_id)
-                        st.rerun()
-                
-                    @dlg(f"Confirm delete “{proc['data']['label']}”")
-                    def _confirm_delete():
+                    def _dialog_body():
                         st.warning(
                             "This will remove the node **and** all its connections.",
                             icon="⚠️",
                         )
                         col_ok, col_cancel = st.columns(2)
+                
                         if col_ok.button("Yes, delete", use_container_width=True):
                             _actually_delete_node(clicked_id)
                             st.success("Deleted. Refreshing …")
                             st.rerun()
+                
                         if col_cancel.button("Cancel", use_container_width=True):
                             st.rerun()
                 
-                    _confirm_delete()
+                    show_dialog(f"Confirm delete “{proc['data']['label']}”", _dialog_body)
 
 
-            # ===== 2) NEW  I/O + PARAMS  ======================================
             # ===== 2) NEW  I/O + PARAMS  ======================================
             with st.expander("⚙️ Inputs / Outputs (x, y, P, w, f(x))", expanded=False):
                 d = proc["data"]
