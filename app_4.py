@@ -97,10 +97,15 @@ def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
 
 
 def _actually_delete_node(nid: str) -> None:
-    """Remove the node and all incident edges."""
-    graph["nodes"]  = [n for n in graph["nodes"] if n["data"]["id"] != nid]
-    graph["edges"]  = [e for e in graph["edges"]
-                       if nid not in (e["data"]["source"], e["data"]["target"])]
+    """Remove node + incident edges and force Cytoscape to remount."""
+    graph["nodes"] = [n for n in graph["nodes"] if n["data"]["id"] != nid]
+    graph["edges"] = [
+        e for e in graph["edges"]
+        if nid not in (e["data"]["source"], e["data"]["target"])
+    ]
+    st.session_state.selected_proc = None
+    # ── new ──────────────────────────────────────────────────────────
+    st.session_state.cy_key += 1    # <- next run gets a fresh component
 
 
 # ──────────────────────────────────────────────────────────────────────────
