@@ -1,4 +1,4 @@
-streamlit          >=1.33
-st-link-analysis    >=0.5.0
-cryptography        ==41.0.5   # ✅ last version with ready-made Linux wheels
-numpy               >=1.23     # used by the D-score helper
+# requirements.txt
+streamlit==1.32.2
+st-link-analysis==0.3.0
+cryptography==41.0.5   # 3.11 wheel, no Rust needed
