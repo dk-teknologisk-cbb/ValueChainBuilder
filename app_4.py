@@ -16,8 +16,6 @@ from cryptography.hazmat.primitives import hashes
 from st_link_analysis import (
     st_link_analysis, NodeStyle, EdgeStyle, Event          # ← NEW: Event
 )
-import re
-import numpy as np
 
 st.set_page_config(layout="wide")
 
@@ -40,6 +38,9 @@ DEFAULT_CATEGORY_COLORS = {
     "Inspection":"#7f7f7f","Maintenance":"#bcbd22","Production":"#17becf",
     "Sorting":"#aec7e8","Sterilization":"#ffbb78",
 }
+
+# add near other lookup tables
+RESTRICTIONS = ["— none —", "Legislation", "Hazardous", "Option 3", "Option 4"]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -66,16 +67,8 @@ EDGE_TYPES = {                       # human → internal description
     },
 }
 
-# ────────────────────────────────────────────────
-#  0) one-time init for the flag
-# ────────────────────────────────────────────────
-if "pending_delete" not in st.session_state:
-    # holds {"id": "...", "label": "..."} or None
-    st.session_state.pending_delete = None
-# ------------------------------------------------
 
-
-
+import re
 def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
     """
     Look at every node / edge ID in the graph and find the maximum numeric
@@ -103,17 +96,6 @@ def _recompute_counters(g: dict[str, list[dict]]) -> dict[str, int]:
     # we want the *next* free number
     return {k: v + 1 for k, v in max_seen.items()}
 
-
-def _actually_delete_node(nid: str) -> None:
-    """Remove node + incident edges and force Cytoscape to remount."""
-    graph["nodes"] = [n for n in graph["nodes"] if n["data"]["id"] != nid]
-    graph["edges"] = [
-        e for e in graph["edges"]
-        if nid not in (e["data"]["source"], e["data"]["target"])
-    ]
-    st.session_state.selected_proc = None
-    # ── new ──────────────────────────────────────────────────────────
-    st.session_state.cy_key += 1    # <- next run gets a fresh component
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -168,7 +150,8 @@ def _add_node(kind:str,lbl:str,parent:str|None=None,
     if color is not None: n["data"]["color"]=color
     graph["nodes"].append(n)
 
-def _add_edge(src: str, tgt: str, edge_kind: str):
+def _add_edge(src: str, tgt: str, edge_kind: str,
+              restriction: str | None = None):
     """
     Insert an edge with a known type (Material flow, Data transfer, …).
 
@@ -186,9 +169,13 @@ def _add_edge(src: str, tgt: str, edge_kind: str):
             "target": tgt,
             "label": edge_kind,          # shown when you hover
             "edge_type": e_def["cls"],   # nice to have in exports
+            "restriction": restriction,          # NEW (may be None)
+            # convenience for Cytoscape label
+            "restr_symbol": "!" if restriction else "",
         },
         "classes": e_def["cls"],         # drives Cytoscape style
     })
+
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -244,18 +231,16 @@ with st.sidebar:
             src = st.selectbox("Source", opts, key="edge_src")
             tgt = st.selectbox("Target", opts, key="edge_tgt")
 
-            edge_kind = st.selectbox(
-                "Type of connection",
-                list(EDGE_TYPES.keys()),
-                key="edge_kind"
-            )
+            edge_kind = st.selectbox("Type of connection", list(EDGE_TYPES.keys()),
+                         key="edge_kind")
 
-            if st.button("Add Connection",
-                        key="add_edge_btn",
-                        disabled=src == tgt):
-                _add_edge(opts[src], opts[tgt], edge_kind)
+            restriction = st.selectbox("Restriction (optional)", RESTRICTIONS,
+                                    key="edge_restr")
+
+            if st.button("Add Connection", key="add_edge_btn", disabled=src == tgt):
+                _add_edge(opts[src], opts[tgt], edge_kind,
+                        restriction=None if restriction == "— none —" else restriction)
                 st.rerun()
-
 
     st.markdown("---")
 
@@ -370,6 +355,19 @@ for human_name, cfg in EDGE_TYPES.items():
 
     edge_styles.append(RawStyle(cls, style_dict))
 
+edge_styles.append(
+    RawStyle("edge[restriction]", {
+        "label": "data(restr_symbol)",
+        "font-size": "14px",
+        "color": "#e74c3c",
+        "text-background-color": "#ffffff",
+        "text-background-opacity": 0.85,
+        "text-background-padding": "2px",
+        "text-rotation": "autorotate",
+        "text-margin-x": 0,
+        "text-margin-y": -6,
+    })
+)
 
 # CSS hack – scale 50 %
 st.markdown("""
@@ -429,31 +427,14 @@ def slim_payload(pl, g: dict) -> dict:
 
         return nice
 
+    # unknown type
     return {}
 
 
-def show_dialog(title: str, body_fn):
-    """
-    Open a modal that works on *any* Streamlit version.
-    Pass the title and a callable that renders the content.
-    """
-    dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
-    if dlg is None:  # very old Streamlit – just run the body inline
-        body_fn()
-        return
 
-    # Context-manager style (new) __________________________
-    if not hasattr(dlg, "__call__") or not getattr(dlg, "__name__", "").endswith("decorator"):
-        with dlg(title):
-            body_fn()
-        return
+import numpy as np
 
-    # Decorator style (old) ________________________________
-    @dlg(title)
-    def _inner():
-        body_fn()
-    _inner()
-
+import numpy as np
 
 def _parse_amounts(entries: list[str]) -> np.ndarray:
     """Given ["Fe: 12 kg", "O2: 3.5 mol"], return array([12.0, 3.5])."""
@@ -499,201 +480,391 @@ def calculate_detail_score(io_lists: dict[str, list[str]]) -> float:
 
 
 
-CLICK_EVENT = Event("proc_click", "tap", ".process")
+# CLICK_EVENT = Event("proc_click", "tap", ".process")
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 1. Events – make ALL node types clickable
+#    (add NEW events for .phase and .segment)
+# ──────────────────────────────────────────────────────────────────────
+CLICK_PROC    = Event("proc_click",   "tap", ".process")
+CLICK_SEGMENT = Event("seg_click",    "tap", ".segment")
+CLICK_PHASE   = Event("phase_click",  "tap", ".phase")
+CLICK_EDGE    = Event("edge_click",  "tap", "edge")   
+
+EVENTS = [CLICK_PROC, CLICK_SEGMENT, CLICK_PHASE, CLICK_EDGE]   # ← add here
+
+
+
+
+def _delete_recursively(node_id: str):
+    """
+    Delete the node (phase | segment | process) with id *node_id*
+    plus all children that live *under* it in the compound hierarchy.
+    Edges that touch any deleted node are removed too.
+    """
+    # 1) collect IDs to remove ---------------------------------------
+    to_remove = {node_id}
+    added = True
+    while added:                       # keep expanding while we find children
+        added = False
+        for n in graph["nodes"]:
+            pid = n["data"].get("parent")
+            if pid in to_remove and n["data"]["id"] not in to_remove:
+                to_remove.add(n["data"]["id"])
+                added = True
+
+    # 2) wipe nodes & edges ------------------------------------------
+    graph["nodes"] = [n for n in graph["nodes"]
+                      if n["data"]["id"] not in to_remove]
+
+    graph["edges"] = [e for e in graph["edges"]
+                      if e["data"]["source"] not in to_remove
+                      and e["data"]["target"] not in to_remove]
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Main graph area  (viewer + all click handlers)
+# ──────────────────────────────────────────────────────────────────────
 with st.container(border=True):
-    # ──────────── render component ────────────────────────────────
+
+    # 1) render Cytoscape component ----------------------------------
     payload = st_link_analysis(
         graph,
         node_styles=node_styles,
         edge_styles=edge_styles,
-        events=[CLICK_EVENT],
+        events=EVENTS,            # 4 events: proc / seg / phase / edge
         layout={"name": "preset"},
         height=600,
         node_actions=["remove"],
         key=f"cy_{st.session_state.cy_key}",
     )
 
-    # st.markdown("#### Raw returned value")
-    # st.json(payload or {}, expanded=False)
+    # 2) nothing returned → nothing to do ----------------------------
+    if not isinstance(payload, dict):
+        st.stop()
 
-    # ──────────── clicked-node handling ───────────────────────────
-    if (
-        isinstance(payload, dict)
-        and payload.get("action") == "proc_click"
-        and isinstance(payload.get("data"), dict)
-    ):
-        clicked_id = payload["data"].get("target_id") or payload["data"].get("id")
+    action = payload.get("action")
+    if action not in {"proc_click", "seg_click", "phase_click", "edge_click"}:
+        st.stop()
+
+    # ----------------------------------------------------------------
+    #  A) EDGE CLICK  (handle *before* touching any node info)
+    # ----------------------------------------------------------------
+    if action == "edge_click":
+        clicked_id = (
+            payload.get("data", {}).get("target_id")
+            or payload.get("data", {}).get("id")
+        )
+
+        edge = next((e for e in graph["edges"]
+                     if e["data"]["id"] == clicked_id), None)
+        if edge is None:
+            st.stop()
 
         node_map = {n["data"]["id"]: n for n in graph["nodes"]}
-        proc = node_map.get(clicked_id)
+        src_id, tgt_id = edge["data"]["source"], edge["data"]["target"]
+        src_lbl = node_map.get(src_id, {}).get("data", {}).get("label", src_id)
+        tgt_lbl = node_map.get(tgt_id, {}).get("data", {}).get("label", tgt_id)
+        human_edge_type = edge["data"].get("label", "Material flow")
 
-        if proc and "process" in proc["classes"]:
+        with st.expander(f"📝 Edit edge “{src_lbl} → {tgt_lbl}”", True):
 
-            # ========== 1) DETAILS  (rename / recategorise / delete) =====
-            with st.expander(f"📝 Edit “{proc['data']['label']}”", expanded=False):
-                cur_cat = proc["data"].get("category", PROCESS_CATEGORIES[0])
+            # 1 — type of connection
+            new_kind = st.selectbox(
+                "Connection type",
+                list(EDGE_TYPES.keys()),
+                index=list(EDGE_TYPES.keys()).index(human_edge_type),
+                key=f"edge_type_{clicked_id}",
+            )
 
-                with st.form(f"edit_{clicked_id}", border=True):
-                    new_label = st.text_input(
-                        "Name", value=proc["data"]["label"],
-                        key=f"edit_lbl_{clicked_id}",
-                    )
-                    new_cat = st.selectbox(
-                        "Category",
-                        PROCESS_CATEGORIES,
-                        index=PROCESS_CATEGORIES.index(cur_cat),
-                        key=f"edit_cat_{clicked_id}",
-                    )
-                    if st.form_submit_button("✅ Save"):
-                        proc["data"]["label"] = new_label
-                        proc["data"]["category"] = new_cat
-                        proc["classes"] = f"process {new_cat.lower().replace(' ','_')}"
-                        proc["data"]["color"] = DEFAULT_CATEGORY_COLORS[new_cat]
-                        st.success("Saved – refreshing …", icon="💾")
-                        st.rerun()
+            # 2 — restriction (pre-select current value or “— none —”)
+            cur_restr = edge["data"].get("restriction") or "— none —"
+            new_restr = st.selectbox(
+                "Restriction",
+                RESTRICTIONS,
+                index=RESTRICTIONS.index(cur_restr),
+                key=f"edge_restr_{clicked_id}",
+            )
 
-                if st.button("🗑️  Delete this process",
-                             type="secondary",
-                             key=f"del_btn_{clicked_id}"):
-                
-                    # just remember what we want to delete and refresh
-                    st.session_state.pending_delete = {
-                        "id":    clicked_id,
-                        "label": proc["data"]["label"],
-                    }
-                    st.rerun()
+            col_save, col_del = st.columns(2)
 
+            # -------- SAVE --------------------------------------------------
+            if col_save.button("✅ Save", use_container_width=True,
+                            key=f"save_edge_{clicked_id}"):
+                cfg = EDGE_TYPES[new_kind]
+                edge["data"]["label"]        = new_kind
+                edge["data"]["edge_type"]    = cfg["cls"]
+                edge["classes"]              = cfg["cls"]
 
+                edge["data"]["restriction"]  = None if new_restr == "— none —" else new_restr
+                edge["data"]["restr_symbol"] = "!" if new_restr != "— none —" else ""
 
-            # ===== 2) NEW  I/O + PARAMS  ======================================
-            with st.expander("⚙️ Inputs / Outputs (x, y, P, w, f(x))", expanded=False):
-                d = proc["data"]
-                prefix = f"{clicked_id}_"
-                placeholder_map = {
-                                    "x": "e.g. PP: 12 kg",
-                                    "y": "e.g. Electricity: 5 kWh",
-                                    "P": "e.g. Temperature: 200 °C",
-                                    "w": "e.g. PP: 1 kg",
-                                }
-                
-                # initialize per-node lists (only once)
-                for param in ["x","y","P","w"]:
-                    ss_key = prefix + param
-                    if ss_key not in st.session_state:
-                        existing = d.get(param, "")
-                        st.session_state[ss_key] = [
-                            e.strip() for e in existing.split(",") if e.strip()
-                        ]
+                st.success("Edge updated – refreshing …", icon="💾")
+                st.rerun()
 
-                # --- Single caption in 2nd column above all inputs ---
-                cap_col0, cap_col1, cap_col2 = st.columns([3, 5, 1])
-                cap_col1.caption("Format: Name: amount unit")
+            # -------- DELETE ------------------------------------------------
+            if col_del.button("🗑️ Delete edge", type="secondary",
+                            use_container_width=True,
+                            key=f"del_edge_{clicked_id}"):
+                graph["edges"] = [e for e in graph["edges"]
+                                if e["data"]["id"] != clicked_id]
+                st.success("Edge deleted – refreshing …", icon="💾")
+                st.rerun()
 
-                # one-line editors for each param
-                for param, label in [
-                    ("x","Input material (x)"),
-                    ("y","Resources (y)"),
-                    ("P","Process params (P)"),
-                    ("w","Waste / rejects (w)")
-                ]:
-                    ss_key    = prefix + param
-                    entry_key = f"{prefix}{param}_entry"
-                    add_key   = f"{prefix}add_{param}"
+    # ----------------------------------------------------------------
+    #  B) NODE CLICKS  (process / segment / phase)  – existing logic
+    # ----------------------------------------------------------------
+    clicked_id = (
+        payload.get("data", {}).get("target_id")
+        or payload.get("data", {}).get("id")
+    )
 
-                    col_label, col_input, col_button = st.columns([3,5,1])
-                    col_label.markdown(f"**{label}**")
-                    # this input no longer reserves a label-row
-                    entry = col_input.text_input(
-                        "", 
-                        key=entry_key, 
-                        label_visibility="collapsed",
-                        placeholder=placeholder_map.get(param, "e.g. Name: amount unit")
-                    )
-                    if col_button.button("➕", key=add_key) and entry:
-                        st.session_state[ss_key].append(entry)
-                        st.rerun()
+    node_map = {n["data"]["id"]: n for n in graph["nodes"]}
+    node = node_map.get(clicked_id)
+    if node is None:                     # safety: should not happen
+        st.stop()
 
+    # 3)  which node was clicked? ------------------------------------
+    clicked_id = (
+        payload.get("data", {}).get("target_id")
+        or payload.get("data", {}).get("id")
+    )
 
-                    # list existing entries
-                    for i, item in enumerate(st.session_state[ss_key]):
-                        c1, c2 = st.columns([8,1])
-                        c1.markdown(f"- {item}")
-                        if c2.button("❌", key=f"{prefix}rem_{param}_{i}"):
-                            st.session_state[ss_key].pop(i)
-                            st.rerun()
+    node_map = {n["data"]["id"]: n for n in graph["nodes"]}
+    node = node_map.get(clicked_id)
+    if node is None:
+        st.stop()
 
-                # f(x) stays a single field
-                fx = st.text_input(
-                    "f(x) – Output as function of x",
-                    d.get("fx", ""), key=f"{prefix}fx"
+    # classify the node ----------------------------------------------
+    if "process" in node["classes"]:
+        node_kind = "process"
+    elif "segment" in node["classes"]:
+        node_kind = "segment"
+    else:
+        node_kind = "phase"
+
+    # =================================================================
+    #  A)  P R O C E S S   E D I T O R   – unchanged from your code
+    # =================================================================
+    if node_kind == "process":
+        proc = node                               # keep the old variable name
+        with st.expander(f"📝 Edit “{proc['data']['label']}”", expanded=False):
+            cur_cat = proc["data"].get("category", PROCESS_CATEGORIES[0])
+
+            with st.form(f"edit_{clicked_id}", border=True):
+                new_label = st.text_input(
+                    "Name", value=proc["data"]["label"],
+                    key=f"edit_lbl_{clicked_id}",
                 )
-
-                # Save all I/O back into the node and recompute D
-                if st.button("✅ Save I/O", key=f"{prefix}save_io"):
-                    for param in ["x","y","P","w"]:
-                        ss_key = prefix + param
-                        d[param] = ",".join(st.session_state[ss_key])
-                    d["fx"] = fx
-
-                    d["D"] = calculate_detail_score({
-                        param: d[param] for param in ["x","y","P","w", "fx"]
-                    })
-
-                    st.success("I/O updated – refreshing …", icon="💾")
+                new_cat = st.selectbox(
+                    "Category",
+                    PROCESS_CATEGORIES,
+                    index=PROCESS_CATEGORIES.index(cur_cat),
+                    key=f"edit_cat_{clicked_id}",
+                )
+                if st.form_submit_button("✅ Save"):
+                    proc["data"]["label"]    = new_label
+                    proc["data"]["category"] = new_cat
+                    proc["classes"]          = (
+                        f"process {new_cat.lower().replace(' ','_')}"
+                    )
+                    proc["data"]["color"]    = DEFAULT_CATEGORY_COLORS[new_cat]
+                    st.success("Saved – refreshing …", icon="💾")
                     st.rerun()
 
+            delete_clicked = st.button(
+                "🗑️  Delete this process",
+                type="secondary",
+                key=f"del_btn_{clicked_id}",
+            )
 
-            # ========== 2) CONNECTION-CREATOR ============================
-            other_procs = [
-                (n["data"]["label"], n["data"]["id"])
-                for n in graph["nodes"]
-                if "process" in n["classes"] and n["data"]["id"] != clicked_id
-            ]
+            if delete_clicked:
+                dlg = getattr(st, "dialog", None) or st.experimental_dialog
 
-            if other_procs:
-                with st.expander("🔗 Create connection", expanded=False):
-                    tgt_lbl = st.selectbox(
-                        "Target process",
-                        [lbl for lbl, _ in other_procs],
-                        key=f"conn_tgt_{clicked_id}",
+                @dlg(f"Confirm delete “{proc['data']['label']}”")
+                def _confirm_delete():
+                    st.warning(
+                        "This will remove the node **and** all its connections.",
+                        icon="⚠️",
                     )
-                    tgt_id = dict(other_procs)[tgt_lbl]
 
-                    edge_kind = st.selectbox(
+                    col_ok, col_cancel = st.columns(2)
+                    if col_ok.button("Yes, delete", use_container_width=True):
+                        _delete_recursively(clicked_id)
+                        st.success("Deleted. Refreshing …")
+                        st.rerun()
+
+                    if col_cancel.button("Cancel", use_container_width=True):
+                        st.rerun()
+
+                _confirm_delete()
+
+        # ========== I/O & parameters =================================
+        with st.expander("⚙️ Inputs / Outputs (x, y, P, w, f(x))", expanded=False):
+            d = proc["data"]
+            prefix = f"{clicked_id}_"
+            placeholder_map = {
+                "x": "e.g. PP: 12 kg",
+                "y": "e.g. Electricity: 5 kWh",
+                "P": "e.g. Temperature: 200 °C",
+                "w": "e.g. PP: 1 kg",
+            }
+            # initialise lists in session_state
+            for param in ["x", "y", "P", "w"]:
+                ss_key = prefix + param
+                if ss_key not in st.session_state:
+                    existing = d.get(param, "")
+                    st.session_state[ss_key] = [
+                        e.strip() for e in existing.split(",") if e.strip()
+                    ]
+
+            cap_col0, cap_col1, cap_col2 = st.columns([3, 5, 1])
+            cap_col1.caption("Format: Name: amount unit")
+
+            for param, label in [
+                ("x", "Input material (x)"),
+                ("y", "Resources (y)"),
+                ("P", "Process params (P)"),
+                ("w", "Waste / rejects (w)"),
+            ]:
+                ss_key    = prefix + param
+                entry_key = f"{prefix}{param}_entry"
+                add_key   = f"{prefix}add_{param}"
+
+                col_label, col_input, col_button = st.columns([3, 5, 1])
+                col_label.markdown(f"**{label}**")
+                entry = col_input.text_input(
+                    "",
+                    key=entry_key,
+                    label_visibility="collapsed",
+                    placeholder=placeholder_map.get(param),
+                )
+                if col_button.button("➕", key=add_key) and entry:
+                    st.session_state[ss_key].append(entry)
+                    st.rerun()
+
+                # list existing entries
+                for i, item in enumerate(st.session_state[ss_key]):
+                    c1, c2 = st.columns([8, 1])
+                    c1.markdown(f"- {item}")
+                    if c2.button("❌", key=f"{prefix}rem_{param}_{i}"):
+                        st.session_state[ss_key].pop(i)
+                        st.rerun()
+
+            # f(x)
+            fx = st.text_input(
+                "f(x) – Output as function of x",
+                d.get("fx", ""),
+                key=f"{prefix}fx",
+            )
+
+            if st.button("✅ Save I/O", key=f"{prefix}save_io"):
+                for param in ["x", "y", "P", "w"]:
+                    ss_key = prefix + param
+                    d[param] = ",".join(st.session_state[ss_key])
+                d["fx"] = fx
+                d["D"]  = calculate_detail_score(
+                    {p: d.get(p, "") for p in ["x", "y", "P", "w", "fx"]}
+                )
+                st.success("I/O updated – refreshing …", icon="💾")
+                st.rerun()
+
+        # ========== quick connection creator =========================
+        other_procs = [
+            (n["data"]["label"], n["data"]["id"])
+            for n in graph["nodes"]
+            if "process" in n["classes"] and n["data"]["id"] != clicked_id
+        ]
+        if other_procs:
+            with st.expander("🔗 Create connection", expanded=False):
+                tgt_lbl = st.selectbox(
+                    "Target process",
+                    [lbl for lbl, _ in other_procs],
+                    key=f"conn_tgt_{clicked_id}",
+                )
+                tgt_id = dict(other_procs)[tgt_lbl]
+
+                edge_kind = st.selectbox(
                     "Type of connection",
                     list(EDGE_TYPES.keys()),
                     key=f"conn_kind_{clicked_id}",
                 )
 
-                    if st.button(
-                        "✅ Create connection",
-                        key=f"mk_edge_{clicked_id}_{tgt_id}",
-                    ):
-                        _add_edge(clicked_id, tgt_id, edge_kind)     # ← pass the chosen type
-                        st.success(f"Edge {clicked_id} → {tgt_id} created")
+                if st.button(
+                    "✅ Create connection",
+                    key=f"mk_edge_{clicked_id}_{tgt_id}",
+                ):
+                    _add_edge(clicked_id, tgt_id, edge_kind)
+                    st.success(f"Edge {clicked_id} → {tgt_id} created")
+                    st.rerun()
+        else:
+            st.info("No other processes to connect to.")
+
+    # =================================================================
+    #  B)  S E G M E N T   E D I T O R
+    # =================================================================
+    if node_kind == "segment":
+        with st.expander(f"📝 Edit segment “{node['data']['label']}”", False):
+            with st.form(f"edit_seg_{clicked_id}", border=True):
+                lbl = st.text_input("Name", node["data"]["label"])
+                if st.form_submit_button("✅ Save"):
+                    node["data"]["label"] = lbl
+                    st.success("Saved – refreshing …", icon="💾")
+                    st.rerun()
+
+            if st.button("🗑️  Delete segment", key=f"del_seg_{clicked_id}"):
+                dlg = getattr(st, "dialog", None) or st.experimental_dialog
+
+                @dlg("Confirm delete segment")
+                def _confirm():
+                    st.warning(
+                        "All processes inside this segment will be deleted as well.",
+                        icon="⚠️",
+                    )
+                    ok, cancel = st.columns(2)
+                    if ok.button("Yes, delete", use_container_width=True):
+                        _delete_recursively(clicked_id)
                         st.rerun()
-            else:
-                st.info("No other processes to connect to.")
+                    if cancel.button("Cancel", use_container_width=True):
+                        st.rerun()
 
-if st.session_state.pending_delete:
+                _confirm()
 
-    pid    = st.session_state.pending_delete["id"]
-    plabel = st.session_state.pending_delete["label"]
+    # =================================================================
+    #  C)  P H A S E   E D I T O R
+    # =================================================================
+    if node_kind == "phase":
+        with st.expander(f"📝 Edit phase “{node['data']['label']}”", False):
+            with st.form(f"edit_phase_{clicked_id}", border=True):
+                lbl = st.text_input("Name", node["data"]["label"])
+                color = st.color_picker(
+                    "Border colour", node["data"].get("color", "#95a5a6")
+                )
+                if st.form_submit_button("✅ Save"):
+                    node["data"]["label"] = lbl
+                    node["data"]["color"] = color
+                    st.success("Saved – refreshing …", icon="💾")
+                    st.rerun()
 
-    with st.container(border=True):
-        st.warning(
-            f"**Delete “{plabel}” and all its connections?**",
-            icon="⚠️"
-        )
-        col_yes, col_no = st.columns(2)
+            if st.button("🗑️  Delete phase", key=f"del_phase_{clicked_id}"):
+                dlg = getattr(st, "dialog", None) or st.experimental_dialog
 
-        if col_yes.button("✅ Yes, delete", key="confirm_del_yes"):
-            _actually_delete_node(pid)        # ← real delete
-            st.session_state.pending_delete = None
-            st.rerun()
+                @dlg("Confirm delete phase")
+                def _confirm_phase():
+                    st.warning(
+                        "All segments and processes inside this phase will be deleted.",
+                        icon="⚠️",
+                    )
+                    ok, cancel = st.columns(2)
+                    if ok.button("Yes, delete", use_container_width=True):
+                        _delete_recursively(clicked_id)
+                        st.rerun()
+                    if cancel.button("Cancel", use_container_width=True):
+                        st.rerun()
 
-        if col_no.button("✖️ Cancel", key="confirm_del_no"):
-            st.session_state.pending_delete = None
-            st.rerun()
+                _confirm_phase()
+  
 
