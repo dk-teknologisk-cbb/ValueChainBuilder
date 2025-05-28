@@ -23,7 +23,7 @@ authors = ["Kresten Bertelsen <krb@teknologisk.dk>"]
 [tool.poetry.dependencies]
 python = "~3.10"
 conda-lock = "^1.1.1"
-streamlit = "1.32.2"
+streamlit = "1.34.0"
 st-link-analysis = "0.3.0"
 cryptography = "41.0.5"
 
